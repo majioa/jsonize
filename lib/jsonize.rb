@@ -129,7 +129,6 @@ module Jsonize
 
    class << self
       def included kls
-         # kls.extend(ClassMethods)
          kls.include(Redisize)
       end
 
