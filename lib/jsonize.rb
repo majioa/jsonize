@@ -44,12 +44,13 @@ module Jsonize
       end
    end
 
-   def generate_json propses, externals = {}
+   def generate_json propses, options = {}
       propses.reduce({}) do |r, (name, props)|
          value =
-            if props["rule"].is_a?(Proc)
-               props["rule"][self]
-            elsif props["rule"].is_a?(String)
+            if props["rule"] == '_reflection'
+               send(name).as_json(options[name.to_sym] || {})
+            elsif props["rule"].is_a?(String) # NOTE required for sidekiq key
+               extenrals = options[:externals]
                externals.fetch(props["rule"].to_sym) { |x| externals[props["rule"]] }
             elsif props["real_name"] != name.to_s
                read_attribute(props["real_name"]).as_json
@@ -70,7 +71,8 @@ module Jsonize
          embed_attrs,
          additional_attrs,
          external_attrs(options),
-         options[:map] || {}
+         options[:map] || {},
+         _reflections
       ].reduce { |r, hash| r.merge(hash.map {|k,v| [k.to_sym, v] }.to_h) }
       except = options.fetch(:except, [])
       only = options.fetch(:only, self.attributes.keys.map(&:to_sym) | (options[:map] || {}).keys | embed_attrs.keys | external_attrs(options).keys)
@@ -81,19 +83,27 @@ module Jsonize
          next nil if except.include?(name.to_sym) || (only & [ name.to_sym, name_in.to_sym ].uniq).blank?
 
          rule = parse_rule(rule_in)
-         #binding.pry
          [name, { "rule" => rule, "real_name" => name_in.to_s }]
       end.compact.to_h
    end
 
    def parse_rule rule_in
-      %w(TrueClass FalseClass NilClass Symbol).all? {|k| !rule_in.is_a?(k.constantize) } && true || rule_in.is_a?(Symbol) && rule_in.to_s || rule_in
+      case rule_in
+      when TrueClass, FalseClass, NilClass
+         true
+      when ActiveRecord::Reflection::AbstractReflection
+         '_reflection'
+      when Symbol, String
+         rule_in.to_s
+      else
+         true
+      end
    end
 
    def jsonize options = {}
       attr_props = prepare_json(options)
       redisize_json(attr_props) do
-         generate_json(attr_props, options[:externals])
+         generate_json(attr_props, options)
       end
    end
 
@@ -104,7 +114,7 @@ module Jsonize
 
    def as_json options = {}
       attr_props = prepare_json(options)
-      generate_json(attr_props, options[:externals])
+      generate_json(attr_props, options)
    end
 
    module Relation
