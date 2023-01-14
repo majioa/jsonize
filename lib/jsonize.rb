@@ -48,9 +48,9 @@ module Jsonize
       propses.reduce({}) do |r, (name, props)|
          value =
             if props["rule"] == '_reflection'
-               send(name).as_json(options[name.to_sym] || {})
-            elsif props["rule"].is_a?(String) # NOTE required for sidekiq key
-               extenrals = options[:externals]
+               send(props["real_name"] || name).as_json(options[name.to_sym] || {})
+            elsif props["rule"].is_a?(String) and options[:externals] # NOTE required for sidekiq key
+               externals = options[:externals]
                externals.fetch(props["rule"].to_sym) { |x| externals[props["rule"]] }
             elsif props["real_name"] != name.to_s
                read_attribute(props["real_name"]).as_json
@@ -83,18 +83,22 @@ module Jsonize
          next nil if except.include?(name.to_sym) || (only & [ name.to_sym, name_in.to_sym ].uniq).blank?
 
          rule = parse_rule(rule_in)
+         next unless rule
+
          [name, { "rule" => rule, "real_name" => name_in.to_s }]
       end.compact.to_h
    end
 
    def parse_rule rule_in
-      case rule_in
-      when TrueClass, FalseClass, NilClass
+      case rule_in.class.to_s
+      when "TrueClass", "FalseClass", "NilClass"
          true
-      when ActiveRecord::Reflection::AbstractReflection
+      when "ActiveRecord::Reflection::AbstractReflection"
          '_reflection'
-      when Symbol, String
+      when "Symbol", "String"
          rule_in.to_s
+      when "ActiveModel::Attribute::Uninitialized"
+         false
       else
          true
       end
