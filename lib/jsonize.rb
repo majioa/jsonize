@@ -70,9 +70,9 @@ module Jsonize
          JSONIZE_ATTRS,
          embed_attrs,
          additional_attrs,
-         external_attrs(options),
          options[:map] || {},
-         _reflections
+         _reflections,
+         external_attrs(options)
       ].reduce { |r, hash| r.merge(hash.map {|k,v| [k.to_sym, v] }.to_h) }
       except = options.fetch(:except, [])
       only = options.fetch(:only, self.attributes.keys.map(&:to_sym) | (options[:map] || {}).keys | embed_attrs.keys | external_attrs(options).keys)
@@ -91,11 +91,11 @@ module Jsonize
 
    def parse_rule rule_in
       case rule_in.class.to_s
-      when "TrueClass", "FalseClass", "NilClass"
+      when /^(True|False|Nil)Class$/
          true
-      when "ActiveRecord::Reflection::AbstractReflection"
+      when /::Reflection::/ # "ActiveRecord::Reflection::AbstractReflection"
          '_reflection'
-      when "Symbol", "String"
+      when /^(Symbol|String)$/
          rule_in.to_s
       when "ActiveModel::Attribute::Uninitialized"
          false
