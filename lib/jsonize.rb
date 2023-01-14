@@ -3,7 +3,7 @@ require 'redisize'
 require "jsonize/version"
 
 module Jsonize
-   JSON_ATTRS = {
+   JSONIZE_ATTRS = {
       created_at: nil,
       updated_at: nil,
    }
@@ -26,7 +26,7 @@ module Jsonize
 
    def embed_attrs
       begin
-         self.class.const_get("JSON_ATTRS")
+         self.class.const_get("JSONIZE_ATTRS")
       rescue
          {}
       end
@@ -67,7 +67,7 @@ module Jsonize
    def prepare_json options = {}
       attr_hash = [
          instance_attrs,
-         JSON_ATTRS,
+         JSONIZE_ATTRS,
          embed_attrs,
          additional_attrs,
          external_attrs(options),
