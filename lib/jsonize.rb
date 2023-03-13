@@ -12,6 +12,8 @@ module Jsonize
       ActiveRecord: 'active_record'
    }
 
+   JSON_TYPES = [String, Integer, TrueClass, FalseClass, NilClass, Hash, Array]
+
    def external_attrs options = {}
       if externals = options[:externals]
          externals.keys.map {|k| [k.to_sym, k.to_sym] }.to_h
@@ -60,8 +62,12 @@ module Jsonize
                read_attribute(props["real_name"] || props["rule"])
             end
 
-         r.merge(name => value)
+         r.merge(name => proceed_value(value))
       end
+   end
+
+   def proceed_value value_in
+      (value_in.class.ancestors & JSON_TYPES).any? ? value_in : value_in.to_s
    end
 
    def prepare_json options = {}
