@@ -51,6 +51,10 @@ module Jsonize
          value =
             if props["rule"] == '_reflection'
                send(props["real_name"] || name).as_json(options[name.to_sym] || {})
+            elsif props["rule"] == '_auto'
+               [props["real_name"], name, "_#{name}"].uniq.reduce(nil) do |res, m|
+                  res.nil? ? (m && respond_to?(m) ? send(m) : nil) : res
+               end
             elsif props["rule"].is_a?(String) and options[:externals] # NOTE required for sidekiq key
                externals = options[:externals]
                externals.fetch(props["rule"].to_sym) { |x| externals[props["rule"]] }
@@ -76,7 +80,7 @@ module Jsonize
          JSONIZE_ATTRS,
          embed_attrs,
          additional_attrs,
-         options[:map] || {},
+         (options[:only] || []).map {|x|[x, '_auto']}.to_h.merge(options[:map] || {}),
          _reflections,
          external_attrs(options)
       ].reduce { |r, hash| r.merge(hash.map {|k,v| [k.to_sym, v] }.to_h) }
