@@ -3,6 +3,8 @@ require 'redisize'
 require "jsonize/version"
 
 module Jsonize
+   DEFAULT_EXCEPT_ATTRS = [:created_at, :updated_at]
+
    JSONIZE_ATTRS = {
       created_at: nil,
       updated_at: nil,
@@ -14,26 +16,11 @@ module Jsonize
 
    JSON_TYPES = [String, Integer, TrueClass, FalseClass, NilClass, Hash, Array]
 
-   def external_attrs options = {}
-      if externals = options[:externals]
-         externals.keys.map {|k| [k.to_sym, k.to_sym] }.to_h
-      else
-         {}
-      end
+   def default_except_attributes
+      DEFAULT_EXCEPT_ATTRS
    end
 
-   def instance_attrs
-      self.attribute_names.map {|a| [a.to_sym, true] }.to_h
-   end
-
-   def embed_attrs
-      begin
-         self.class.const_get("JSONIZE_ATTRS")
-      rescue
-         {}
-      end
-   end
-
+   # TODO where is the addtional sources for attributes
    def additional_attrs
       attributes = self.instance_variable_get(:@attributes).send(:attributes)
 
@@ -46,27 +33,41 @@ module Jsonize
       end
    end
 
-   def generate_json propses, options = {}
-      propses.reduce({}) do |r, (name, props)|
+   def generate_relation rela, source_in, options
+      source = source_in.is_a?(Hash) ? source_in : source_in.polymorphic? ?
+         {} : required_attibutes(source_in.klass, {})
+
+      case rela
+      when Enumerable
+         rela.map do |rec|
+            generate_json(rec, source, options)
+         end
+      when NilClass
+         nil
+      when Object
+         generate_json(rela, source, options)
+      end
+   end
+
+   def generate_json flow, attr_props, options = {}
+     in_h = (options[:externals] || {}).map {|(x, y)| [x.to_s, y] }.to_h
+
+     attr_props.reduce(in_h) do |cr, (name, props)|
          value =
-            if props["rule"] == '_reflection'
-               send(props["real_name"] || name).as_json(options[name.to_sym] || {})
-            elsif props["rule"] == '_auto'
-               [props["real_name"], name, "_#{name}"].uniq.reduce(nil) do |res, m|
-                  res.nil? ? (m && respond_to?(m) ? send(m) : nil) : res
+            [props].flatten.reduce(nil) do |r, source|
+               case source
+               when UnboundMethod
+                  r || source.bind(flow)[]
+               when Proc
+                  r || source[flow]
+               when Hash, ActiveRecord::Reflection::AbstractReflection
+                  generate_relation(r || flow.send(name), source, options)
+               else
+                  raise
                end
-            elsif props["rule"].is_a?(String) and options[:externals] # NOTE required for sidekiq key
-               externals = options[:externals]
-               externals.fetch(props["rule"].to_sym) { |x| externals[props["rule"]] }
-            elsif props["real_name"] != name.to_s
-               read_attribute(props["real_name"]).as_json
-            elsif props["rule"].instance_variable_get(:@value)
-               props["rule"].instance_variable_get(:@value)
-            elsif props["rule"]
-               read_attribute(props["real_name"] || props["rule"])
             end
 
-         r.merge(name => proceed_value(value))
+         cr.merge(name.to_s => proceed_value(value))
       end
    end
 
@@ -74,61 +75,78 @@ module Jsonize
       (value_in.class.ancestors & JSON_TYPES).any? ? value_in : value_in.to_s
    end
 
-   def prepare_json options = {}
-      attr_hash = [
-         instance_attrs,
-         JSONIZE_ATTRS,
-         embed_attrs,
-         additional_attrs,
-         (options[:only] || []).map {|x|[x, '_auto']}.to_h.merge(options[:map] || {}),
-         _reflections,
-         external_attrs(options)
-      ].reduce { |r, hash| r.merge(hash.map {|k,v| [k.to_sym, v] }.to_h) }
-      except = options.fetch(:except, [])
-      only = options.fetch(:only, self.attributes.keys.map(&:to_sym) | (options[:map] || {}).keys | embed_attrs.keys | external_attrs(options).keys)
+   def prepare_attributes model, attrs
+      attrs.reduce({}) do |h, x|
+         if x.is_a?(Hash)
+            x.reduce(h) do |hh, (sub, subattrs)|
+               if submodel = model._reflections[sub]&.klass
+                  hh.merge(sub.to_sym => prepare_attributes(submodel, subattrs))
+               else
+                  hh
+               end
+            end
+         else
+            props = [
+               model._reflections[x.to_s],
+               model.instance_methods.include?(x.to_sym) ? model.instance_method(x.to_sym) : nil,
+               (self.class == model ? self.attribute_names : model.attribute_names).
+                  include?(x.to_s) ? ->(this) { this.read_attribute(x) } : nil
+            ].compact
 
-      attr_hash.map do |(name_in, rule_in)|
-         name = /^_(?<_name>.*)/ =~ name_in && _name || name_in.to_s
-
-         next nil if except.include?(name.to_sym) || (only & [ name.to_sym, name_in.to_sym ].uniq).blank?
-
-         rule = parse_rule(rule_in)
-         next unless rule
-
-         [name, { "rule" => rule, "real_name" => name_in.to_s }]
-      end.compact.to_h
-   end
-
-   def parse_rule rule_in
-      case rule_in.class.to_s
-      when /^(True|False|Nil)Class$/
-         true
-      when /::Reflection::/ # "ActiveRecord::Reflection::AbstractReflection"
-         '_reflection'
-      when /^(Symbol|String)$/
-         rule_in.to_s
-      when "ActiveModel::Attribute::Uninitialized"
-         false
-      else
-         true
+            h.merge(x.to_s.sub(/^_/, '').to_sym => props)
+         end
       end
    end
 
+   def attibute_tree klass, options = {}
+      options[:only] ||
+      jsonize_attributes_except(self.class == klass ? self.attribute_names : klass.attribute_names,
+         options[:except] || default_except_attributes)
+   end
+
+   def jsonize_scheme_for klass, attr_tree
+      jsonize_schemes[attr_tree] ||= prepare_attributes(klass, attr_tree)
+   end
+
+   def jsonize_attributes_except a_in, except_in
+      except_in.reduce(a_in) do |res, name|
+         if res.include?(name)
+            res.delete(name)
+         end
+
+         res
+      end
+   end
+
+   def jsonize_schemes
+      schemes = self.class.instance_variable_get(:@jsonize_schemes) || {}
+      self.class.instance_variable_set(:@jsonize_schemes, schemes)
+
+      schemes
+   end
+
+   def primary_key
+      @primary_key
+   end
+
    def jsonize options = {}
-      attr_props = prepare_json(options)
-      redisize_json(attr_props) do
-         generate_json(attr_props, options)
+      attr_tree = attibute_tree(self.class, options)
+
+      redisize_json(attr_tree) do
+         attr_props = jsonize_scheme_for(self.class, attr_tree)
+         generate_json(self, attr_props, options)
       end
    end
 
    def dejsonize options = {}
-      attr_props = prepare_json(options)
-      deredisize_json(attr_props)
+      attr_tree = attibute_tree(self.class, options)
+      deredisize_json(attr_tree)
    end
 
    def as_json options = {}
-      attr_props = prepare_json(options)
-      generate_json(attr_props, options)
+      attr_props = jsonize_scheme_for(self.class, attibute_tree(self.class, options))
+
+      generate_json(self, attr_props, options)
    end
 
    module Relation
